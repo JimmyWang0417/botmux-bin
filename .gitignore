@@ -1,0 +1,6 @@
+src/
+pkg/
+*.pkg.tar.*
+botmux-*-x86_64
+botmux-*-aarch64
+LICENSE-*

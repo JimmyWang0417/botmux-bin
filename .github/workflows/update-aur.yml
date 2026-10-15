@@ -1,0 +1,85 @@
+name: Update botmux-bin
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # every 6 hours
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Re-run even if pkgver is already current (refresh sums/.SRCINFO)'
+        type: boolean
+        default: false
+      publish:
+        description: 'Publish to AUR even if nothing changed (needs AUR_SSH_PRIVATE_KEY)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-aur
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upstream and update PKGBUILD / .SRCINFO
+        id: bump
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          args=()
+          [ "$FORCE" = "true" ] && args+=(--force)
+          scripts/update-pkg.sh "${args[@]}"
+
+      - name: Commit and push
+        id: commit
+        if: steps.bump.outputs.updated == 'true'
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          if git diff --quiet -- PKGBUILD .SRCINFO; then
+            echo "no changes to commit"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "botmux-bin: update to ${VERSION}"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # Secrets cannot be used directly in `if:`; expose only a boolean.
+      - name: Is AUR publishing configured?
+        id: aur
+        run: |
+          if [ -n "${AUR_SSH_PRIVATE_KEY:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_PRIVATE_KEY secret not set; skipping AUR publish."
+          fi
+
+      - name: Publish to AUR
+        if: >-
+          steps.aur.outputs.enabled == 'true' &&
+          (steps.commit.outputs.changed == 'true' || inputs.publish == true)
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: botmux-bin
+          pkgbuild: ./PKGBUILD
+          assets: |
+            ./botmux-bin.install
+            ./.SRCINFO
+          commit_username: ${{ github.repository_owner }}
+          commit_email: ${{ github.repository_owner }}@users.noreply.github.com
+          commit_message: Update to ${{ steps.bump.outputs.version }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
